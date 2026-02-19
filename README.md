@@ -135,6 +135,7 @@ options:
   -l, --list            List available images in the ISO and exit
   --all-dlls            Copy ALL DLLs/EXEs from System32 (maximum compatibility)
   --no-registry         Skip registry hive extraction (PeMCP generates its own)
+  --dry-run             Report what would be extracted without writing anything
   --keep-wim            Keep the intermediate WIM file after extraction
   -v, --verbose         Enable debug logging
 ```
@@ -153,6 +154,9 @@ python extract_iso.py Win10.iso --output ./my_rootfs --index 1
 
 # Maximum compatibility: all DLLs, skip registry (PeMCP generates stubs)
 python extract_iso.py Win10.iso --all-dlls --no-registry
+
+# Preview what would be extracted without copying anything
+python extract_iso.py Win10.iso --dry-run --index 1
 ```
 
 ## Output structure
