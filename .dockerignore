@@ -1,0 +1,6 @@
+.git
+*.iso
+rootfs/
+__pycache__
+*.pyc
+.env
