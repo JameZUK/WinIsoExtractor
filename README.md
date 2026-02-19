@@ -1,21 +1,76 @@
-# Windows ISO Extractor for Qiling Framework
+# Windows ISO Extractor for Qiling / PeMCP
 
 Extract Windows system files (DLLs, registry hives, drivers) from a Windows
-ISO image and organize them into the `rootfs` directory structure required by
-the [Qiling](https://github.com/qilingframework/qiling) binary emulation
-framework.
+ISO image and organize them into the `qiling-rootfs` directory structure
+required by the [Qiling](https://github.com/qilingframework/qiling) binary
+emulation framework.
+
+Designed for use with [PeMCP](https://github.com/JameZUK/PeMCP) to enable
+Windows PE binary emulation and analysis.
 
 ## What it does
 
 1. Reads the Windows ISO using `pycdlib`
 2. Extracts `install.wim` (or `install.esd`) from the `sources/` directory
 3. Uses `wimlib-imagex` to unpack the chosen Windows edition
-4. Copies the required DLLs, registry hives, and drivers into a Qiling-compatible rootfs layout
+4. Copies DLLs, drivers, and optionally registry hives into a Qiling-compatible rootfs
 
 For a 64-bit ISO, both `x8664_windows` and `x86_windows` rootfs directories
 are created (32-bit DLLs are sourced from `SysWOW64`).
 
-## Quick start with Docker (recommended)
+## Using with PeMCP
+
+PeMCP expects the rootfs at `./qiling-rootfs/` (or the path set via
+`PEMCP_ROOTFS`). This tool outputs to that location by default.
+
+### Quick setup (Docker)
+
+```bash
+# 1. Build the extractor image
+docker build -t win-iso-extractor .
+
+# 2. Extract DLLs into a qiling-rootfs directory
+docker run --rm \
+  -v /path/to/Win10.iso:/data/input.iso:ro \
+  -v $(pwd)/qiling-rootfs:/data/rootfs \
+  win-iso-extractor /data/input.iso --output /data/rootfs --index 1
+
+# 3. Run PeMCP with the populated rootfs
+cd /path/to/PeMCP
+PEMCP_ROOTFS=/path/to/qiling-rootfs ./run.sh --mcp
+```
+
+Or use `--all-dlls` for maximum compatibility (copies every DLL from
+System32, uses more disk space but avoids missing-DLL errors during
+emulation):
+
+```bash
+docker run --rm \
+  -v /path/to/Win10.iso:/data/input.iso:ro \
+  -v $(pwd)/qiling-rootfs:/data/rootfs \
+  win-iso-extractor /data/input.iso --output /data/rootfs --index 1 --all-dlls
+```
+
+### PeMCP docker-compose integration
+
+Point `PEMCP_ROOTFS` at the extracted rootfs in your `.env` or environment:
+
+```bash
+export PEMCP_ROOTFS=/path/to/qiling-rootfs
+docker compose up
+```
+
+PeMCP's `run.sh` and `docker-compose.yml` both mount this directory to
+`/app/qiling-rootfs` inside the container automatically.
+
+### Registry hives
+
+PeMCP auto-generates minimal registry hive stubs, so you can safely skip
+registry extraction with `--no-registry`. However, if you want real registry
+data (richer emulation), omit that flag and the genuine hives from the ISO
+will be used instead.
+
+## Quick start with Docker
 
 Build the image once:
 
@@ -26,15 +81,17 @@ docker build -t win-iso-extractor .
 List the Windows editions available in an ISO:
 
 ```bash
-docker run --rm -v /path/to/Win10.iso:/data/input.iso win-iso-extractor /data/input.iso --list
+docker run --rm \
+  -v /path/to/Win10.iso:/data/input.iso \
+  win-iso-extractor /data/input.iso --list
 ```
 
-Extract to a local `rootfs/` directory:
+Extract to a local `qiling-rootfs/` directory:
 
 ```bash
 docker run --rm \
   -v /path/to/Win10.iso:/data/input.iso:ro \
-  -v $(pwd)/rootfs:/data/rootfs \
+  -v $(pwd)/qiling-rootfs:/data/rootfs \
   win-iso-extractor /data/input.iso --output /data/rootfs --index 1
 ```
 
@@ -73,9 +130,11 @@ positional arguments:
   iso                   Path to the Windows ISO file
 
 options:
-  -o, --output DIR      Output directory (default: ./rootfs)
+  -o, --output DIR      Output directory (default: ./qiling-rootfs)
   -i, --index N         WIM image index to extract
   -l, --list            List available images in the ISO and exit
+  --all-dlls            Copy ALL DLLs/EXEs from System32 (maximum compatibility)
+  --no-registry         Skip registry hive extraction (PeMCP generates its own)
   --keep-wim            Keep the intermediate WIM file after extraction
   -v, --verbose         Enable debug logging
 ```
@@ -89,14 +148,17 @@ python extract_iso.py Win10.iso --list
 # Extract with interactive edition selection
 python extract_iso.py Win10.iso
 
-# Extract a specific edition (index 1) to a custom directory
+# Extract a specific edition to a custom directory
 python extract_iso.py Win10.iso --output ./my_rootfs --index 1
+
+# Maximum compatibility: all DLLs, skip registry (PeMCP generates stubs)
+python extract_iso.py Win10.iso --all-dlls --no-registry
 ```
 
 ## Output structure
 
 ```
-rootfs/
+qiling-rootfs/
 ├── x8664_windows/
 │   ├── bin/
 │   └── Windows/
@@ -131,16 +193,16 @@ rootfs/
             └── NTUSER.DAT
 ```
 
-## Using with Qiling
+## Using with Qiling directly
 
-Once extracted, point Qiling at the rootfs:
+If you're using Qiling without PeMCP:
 
 ```python
 from qiling import Qiling
 
 ql = Qiling(
-    argv=[r"rootfs/x8664_windows/bin/your_target.exe"],
-    rootfs="rootfs/x8664_windows",
+    argv=[r"qiling-rootfs/x8664_windows/bin/your_target.exe"],
+    rootfs="qiling-rootfs/x8664_windows",
 )
 ql.run()
 ```

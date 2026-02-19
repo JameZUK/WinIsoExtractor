@@ -1,17 +1,17 @@
 #!/usr/bin/env python3
 """
-Windows ISO Extractor for Qiling Framework
+Windows ISO Extractor for Qiling Framework / PeMCP
 
 Extracts Windows system files (DLLs, registry hives, etc.) from a Windows ISO
 image and organizes them into the rootfs directory structure expected by the
-Qiling binary emulation framework.
+Qiling binary emulation framework.  Designed for use with PeMCP
+(https://github.com/JameZUK/PeMCP) to enable Windows PE emulation.
 
 Usage:
     python extract_iso.py <path_to_iso> [--output <output_dir>] [--index <wim_index>]
 """
 
 import argparse
-import fnmatch
 import logging
 import os
 import shutil
@@ -381,9 +381,10 @@ def copy_file_ci(wim_root, rel_src, dest_path):
     return False
 
 
-def copy_dlls(wim_root, src_dir_rel, dll_list, dest_sys32):
-    """Copy the required DLLs.  Also glob for api-ms-win-* DLLs that may
-    not be in the explicit list."""
+def copy_dlls(wim_root, src_dir_rel, dll_list, dest_sys32, *, all_dlls=False):
+    """Copy the required DLLs.  When *all_dlls* is True, copy every DLL and
+    EXE from the source directory for maximum emulation compatibility.
+    Otherwise copy only the known-required list plus any api-ms-win-* stubs."""
     os.makedirs(dest_sys32, exist_ok=True)
 
     copied = 0
@@ -400,6 +401,16 @@ def copy_dlls(wim_root, src_dir_rel, dll_list, dest_sys32):
             available[entry.lower()] = entry
     except OSError:
         pass
+
+    if all_dlls:
+        # Copy every DLL, EXE, and related PE file from the directory
+        for name_lower, real_name in available.items():
+            if name_lower.endswith((".dll", ".exe", ".drv", ".ocx", ".cpl")):
+                src = os.path.join(src_dir, real_name)
+                if os.path.isfile(src):
+                    shutil.copy2(src, os.path.join(dest_sys32, real_name))
+                    copied += 1
+        return copied, []
 
     for dll in dll_list:
         real_name = available.get(dll.lower())
@@ -461,9 +472,14 @@ def copy_registry_hives(wim_root, dest_registry):
     return copied
 
 
-def build_rootfs(wim_root, output_dir, arch):
+def build_rootfs(wim_root, output_dir, arch, *, all_dlls=False, no_registry=False):
     """Construct the Qiling rootfs directory tree from an extracted Windows
-    image at *wim_root*."""
+    image at *wim_root*.
+
+    When *all_dlls* is True every DLL/EXE in System32 / SysWOW64 is copied
+    for maximum emulation coverage.  When *no_registry* is True, registry
+    hives are skipped (PeMCP auto-generates its own stubs).
+    """
 
     if arch == "x64":
         rootfs_x64 = os.path.join(output_dir, "x8664_windows")
@@ -477,7 +493,9 @@ def build_rootfs(wim_root, output_dir, arch):
         os.makedirs(os.path.join(rootfs_x64, "Windows", "Temp"), exist_ok=True)
         os.makedirs(os.path.join(rootfs_x64, "bin"), exist_ok=True)
 
-        copied, missing = copy_dlls(wim_root, "Windows/System32", DLLS_X64, sys32_x64)
+        copied, missing = copy_dlls(
+            wim_root, "Windows/System32", DLLS_X64, sys32_x64, all_dlls=all_dlls,
+        )
         log.info("  64-bit DLLs copied: %d, missing: %d", copied, len(missing))
         if missing:
             log.warning("  Missing 64-bit DLLs: %s", ", ".join(missing))
@@ -485,8 +503,9 @@ def build_rootfs(wim_root, output_dir, arch):
         drv = copy_drivers(wim_root, "Windows/System32/drivers", drivers_x64)
         log.info("  64-bit drivers copied: %d", drv)
 
-        log.info("  Copying registry hives for x8664 ...")
-        copy_registry_hives(wim_root, reg_x64)
+        if not no_registry:
+            log.info("  Copying registry hives for x8664 ...")
+            copy_registry_hives(wim_root, reg_x64)
 
         # --- x86 rootfs (from SysWOW64) ---
         log.info("Building x86_windows rootfs (from SysWOW64) ...")
@@ -496,7 +515,9 @@ def build_rootfs(wim_root, output_dir, arch):
         os.makedirs(os.path.join(rootfs_x86, "Windows", "Temp"), exist_ok=True)
         os.makedirs(os.path.join(rootfs_x86, "bin"), exist_ok=True)
 
-        copied, missing = copy_dlls(wim_root, "Windows/SysWOW64", DLLS_X86, sys32_x86)
+        copied, missing = copy_dlls(
+            wim_root, "Windows/SysWOW64", DLLS_X86, sys32_x86, all_dlls=all_dlls,
+        )
         log.info("  32-bit DLLs copied: %d, missing: %d", copied, len(missing))
         if missing:
             log.warning("  Missing 32-bit DLLs: %s", ", ".join(missing))
@@ -507,8 +528,9 @@ def build_rootfs(wim_root, output_dir, arch):
             drv = copy_drivers(wim_root, "Windows/System32/drivers", drivers_x86)
         log.info("  32-bit drivers copied: %d", drv)
 
-        log.info("  Copying registry hives for x86 ...")
-        copy_registry_hives(wim_root, reg_x86)
+        if not no_registry:
+            log.info("  Copying registry hives for x86 ...")
+            copy_registry_hives(wim_root, reg_x86)
 
     else:
         # 32-bit only ISO
@@ -521,7 +543,9 @@ def build_rootfs(wim_root, output_dir, arch):
         os.makedirs(os.path.join(rootfs_x86, "Windows", "Temp"), exist_ok=True)
         os.makedirs(os.path.join(rootfs_x86, "bin"), exist_ok=True)
 
-        copied, missing = copy_dlls(wim_root, "Windows/System32", DLLS_X86, sys32)
+        copied, missing = copy_dlls(
+            wim_root, "Windows/System32", DLLS_X86, sys32, all_dlls=all_dlls,
+        )
         log.info("  32-bit DLLs copied: %d, missing: %d", copied, len(missing))
         if missing:
             log.warning("  Missing 32-bit DLLs: %s", ", ".join(missing))
@@ -529,8 +553,9 @@ def build_rootfs(wim_root, output_dir, arch):
         drv = copy_drivers(wim_root, "Windows/System32/drivers", drivers)
         log.info("  32-bit drivers copied: %d", drv)
 
-        log.info("  Copying registry hives ...")
-        copy_registry_hives(wim_root, reg)
+        if not no_registry:
+            log.info("  Copying registry hives ...")
+            copy_registry_hives(wim_root, reg)
 
 
 # ---------------------------------------------------------------------------
@@ -540,12 +565,16 @@ def build_rootfs(wim_root, output_dir, arch):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Extract Windows system files from an ISO for the Qiling framework rootfs.",
+        description=(
+            "Extract Windows system files from an ISO for the Qiling framework rootfs.\n"
+            "Designed for use with PeMCP (https://github.com/JameZUK/PeMCP)."
+        ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
             "  %(prog)s Win10.iso\n"
-            "  %(prog)s Win10.iso --output ./rootfs --index 1\n"
+            "  %(prog)s Win10.iso --output ./qiling-rootfs --index 1\n"
+            "  %(prog)s Win10.iso --all-dlls\n"
             "  %(prog)s Win10.iso --list\n"
         ),
     )
@@ -553,8 +582,8 @@ def main():
     parser.add_argument(
         "-o",
         "--output",
-        default="rootfs",
-        help="Output directory for the Qiling rootfs (default: ./rootfs)",
+        default="qiling-rootfs",
+        help="Output directory for the Qiling rootfs (default: ./qiling-rootfs)",
     )
     parser.add_argument(
         "-i",
@@ -569,6 +598,18 @@ def main():
         action="store_true",
         dest="list_images",
         help="List available images in the ISO and exit",
+    )
+    parser.add_argument(
+        "--all-dlls",
+        action="store_true",
+        help="Copy ALL DLLs/EXEs from System32 (not just the known-required set). "
+        "Uses more disk space but gives maximum emulation compatibility.",
+    )
+    parser.add_argument(
+        "--no-registry",
+        action="store_true",
+        help="Skip extracting registry hives. PeMCP auto-generates its own "
+        "registry stubs, so this is safe when using PeMCP.",
     )
     parser.add_argument(
         "--keep-wim",
@@ -657,10 +698,18 @@ def main():
         output_dir = os.path.abspath(args.output)
         os.makedirs(output_dir, exist_ok=True)
 
-        build_rootfs(wim_extract_dir, output_dir, arch)
+        build_rootfs(
+            wim_extract_dir,
+            output_dir,
+            arch,
+            all_dlls=args.all_dlls,
+            no_registry=args.no_registry,
+        )
 
         log.info("=" * 60)
         log.info("Qiling rootfs created at: %s", output_dir)
+        if args.all_dlls:
+            log.info("Mode: ALL DLLs copied for maximum compatibility")
         log.info("=" * 60)
 
         # Print summary of what was created

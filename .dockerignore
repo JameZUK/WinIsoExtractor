@@ -1,6 +1,7 @@
 .git
 *.iso
 rootfs/
+qiling-rootfs/
 __pycache__
 *.pyc
 .env
