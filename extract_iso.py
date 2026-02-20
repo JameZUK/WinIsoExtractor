@@ -42,7 +42,6 @@ DLLS_X86 = [
     "bcrypt.dll",
     "cabinet.dll",
     "cfgmgr32.dll",
-    "ci.dll",
     "clbcatq.dll",
     "combase.dll",
     "comctl32.dll",
@@ -52,10 +51,8 @@ DLLS_X86 = [
     "dnsapi.dll",
     "gdi32.dll",
     "gdi32full.dll",
-    "hal.dll",
     "imm32.dll",
     "iphlpapi.dll",
-    "kdcom.dll",
     "kernel32.dll",
     "KernelBase.dll",
     "mpr.dll",
@@ -63,7 +60,6 @@ DLLS_X86 = [
     "msvcp_win.dll",
     "msvcp60.dll",
     "msvcr120_clr0400.dll",
-    "msvcr110.dll",
     "msvcrt.dll",
     "mswsock.dll",
     "netapi32.dll",
@@ -131,7 +127,6 @@ DLLS_X64 = [
     "msvcp_win.dll",
     "msvcp60.dll",
     "msvcr120_clr0400.dll",
-    "msvcr110.dll",
     "msvcrt.dll",
     "mswsock.dll",
     "netapi32.dll",
@@ -505,9 +500,13 @@ def copy_file_ci(wim_root, rel_src, dest_path):
     return False
 
 
-def _build_winsxs_index(wim_root, arch):
+def _build_winsxs_index(wim_root, prefixes):
     """Build a case-insensitive {filename_lower: full_path} index of DLLs
-    inside Windows/WinSxS/ for the given architecture.
+    inside Windows/WinSxS/ for assembly directories matching *prefixes*.
+
+    *prefixes* is a tuple of directory-name prefixes to scan, e.g.
+    ``("amd64_",)`` for 64-bit or ``("x86_", "wow64_")`` for 32-bit
+    assemblies on a 64-bit image.
 
     WinSxS contains side-by-side assemblies including Visual C++ runtime
     DLLs and api-ms-win-* forwarders that aren't directly in System32.
@@ -518,18 +517,12 @@ def _build_winsxs_index(wim_root, arch):
     if winsxs is None or not os.path.isdir(winsxs):
         return {}
 
-    # Only scan assembly directories matching the target architecture
-    arch_prefix = "amd64_" if arch == "x64" else "x86_"
-    # Also include wow64_ dirs (32-bit assemblies on 64-bit)
-    wow_prefix = "wow64_" if arch == "x64" else None
-
     index = {}
     try:
         for entry in sorted(os.listdir(winsxs)):
             entry_lower = entry.lower()
-            if not entry_lower.startswith(arch_prefix):
-                if wow_prefix is None or not entry_lower.startswith(wow_prefix):
-                    continue
+            if not any(entry_lower.startswith(p) for p in prefixes):
+                continue
             subdir = os.path.join(winsxs, entry)
             if not os.path.isdir(subdir):
                 continue
@@ -542,7 +535,8 @@ def _build_winsxs_index(wim_root, arch):
     except OSError:
         pass
 
-    log.debug("WinSxS index: %d DLLs/EXEs found for %s", len(index), arch)
+    log.debug("WinSxS index: %d DLLs/EXEs found for prefixes %s",
+              len(index), prefixes)
     return index
 
 
@@ -700,8 +694,13 @@ def build_rootfs(wim_root, output_dir, arch, *, all_dlls=False,
     # Build WinSxS indexes to recover DLLs not directly in System32/SysWOW64
     # (e.g. Visual C++ runtime DLLs, api-ms-win-crt-* forwarders).
     log.info("Indexing WinSxS assemblies ...")
-    sxs_x64 = _build_winsxs_index(wim_root, "x64") if arch == "x64" else {}
-    sxs_x86 = _build_winsxs_index(wim_root, "x86")
+    if arch == "x64":
+        sxs_x64 = _build_winsxs_index(wim_root, ("amd64_",))
+        # 32-bit DLLs live in both x86_* and wow64_* assembly dirs
+        sxs_x86 = _build_winsxs_index(wim_root, ("x86_", "wow64_"))
+    else:
+        sxs_x64 = {}
+        sxs_x86 = _build_winsxs_index(wim_root, ("x86_",))
 
     if arch == "x64":
         rootfs_x64 = os.path.join(output_dir, "x8664_windows")
