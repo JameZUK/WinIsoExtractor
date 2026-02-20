@@ -240,6 +240,24 @@ def _strip_iso_version(name):
     return name
 
 
+def _udf_find_child(iso, parent_path, target_lower):
+    """Case-insensitive search for a UDF directory entry.
+
+    Returns the real (on-disc) name of the child whose lower-cased name
+    equals *target_lower*, or ``None`` if not found.
+    """
+    for child in iso.list_children(udf_path=parent_path):
+        if child is None:
+            continue
+        ident = child.file_identifier()
+        if ident is None:
+            continue
+        name = ident.decode("utf-8", errors="replace")
+        if name.lower() == target_lower:
+            return name
+    return None
+
+
 def extract_wim_from_iso(iso_path, dest_dir):
     """Open *iso_path* with pycdlib and extract the install.wim (or
     install.esd) to *dest_dir*.  Returns the path to the extracted file."""
@@ -250,9 +268,15 @@ def extract_wim_from_iso(iso_path, dest_dir):
     try:
         # Prefer UDF, then Joliet, then plain ISO9660 for long file names.
         if iso.has_udf():
-            facade = iso.list_children(udf_path="/sources")
-            source_prefix = "/sources/"
             use = "udf"
+            # UDF paths are case-sensitive in pycdlib — find "sources"
+            # directory with a case-insensitive scan of the root.
+            sources_name = _udf_find_child(iso, "/", "sources")
+            if sources_name is None:
+                log.error("Could not find 'sources' directory in ISO (UDF).")
+                sys.exit(1)
+            source_prefix = "/" + sources_name + "/"
+            facade = iso.list_children(udf_path="/" + sources_name)
         elif iso.has_joliet():
             facade = iso.list_children(joliet_path="/sources")
             source_prefix = "/sources/"
