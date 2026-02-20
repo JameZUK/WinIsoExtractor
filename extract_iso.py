@@ -249,31 +249,29 @@ def _child_name(child, mode):
     if child is None:
         return None
 
-    # UDF entries: try the .fi attribute first (UDFFileIdentifierDescriptor),
-    # then fall back to file_identifier() for compat with different pycdlib
-    # versions.
-    if mode == "udf":
-        raw = getattr(child, "fi", None)
-        if raw is None and hasattr(child, "file_identifier"):
-            raw = child.file_identifier()
-        if raw is None or raw in (b"", b"\x00"):
-            return None
-        return raw.decode("utf-8", errors="replace")
-
-    # ISO9660 / Joliet
     if not hasattr(child, "file_identifier"):
         return None
     raw = child.file_identifier()
-    if raw is None or raw in (b"\x00", b"\x01"):
+    if raw is None or raw in (b"", b"\x00", b"\x01"):
         return None
+
+    if mode == "udf":
+        # UDF file_identifier() returns UTF-16-BE on UDFFileEntry objects.
+        # Try UTF-16-BE first; if it fails or looks wrong fall back to UTF-8.
+        if len(raw) >= 2 and raw[0:1] == b"\x00":
+            # Looks like UTF-16-BE (ASCII chars have a leading 0x00 byte)
+            name = raw.decode("utf-16-be", errors="replace").rstrip("\x00")
+        else:
+            name = raw.decode("utf-8", errors="replace")
+        return name or None
 
     if mode == "joliet":
         return _strip_iso_version(
             raw.decode("utf-16-be", errors="replace")
-        ).rstrip("\x00")
+        ).rstrip("\x00") or None
 
     # plain ISO9660
-    return _strip_iso_version(raw.decode("ascii", errors="replace"))
+    return _strip_iso_version(raw.decode("ascii", errors="replace")) or None
 
 
 def _find_wim_in_iso(iso):
@@ -304,17 +302,8 @@ def _find_wim_in_iso(iso):
                     if name and name.lower() == "sources":
                         sources_name = name
                         break
-                    # Dump raw child info for debugging
-                    if child is not None:
-                        log.debug(
-                            "  UDF root child: type=%s, name=%r, "
-                            "has_fi=%s, has_file_identifier=%s, fi=%r",
-                            type(child).__name__,
-                            name,
-                            hasattr(child, "fi"),
-                            hasattr(child, "file_identifier"),
-                            getattr(child, "fi", "<missing>"),
-                        )
+                    if name:
+                        log.debug("  UDF root: %s", name)
             except Exception as exc:
                 log.debug("UDF root listing failed: %s", exc)
                 continue
