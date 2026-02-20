@@ -264,8 +264,11 @@ def extract_wim_from_iso(iso_path, dest_dir):
 
         wim_name = None
         for child in facade:
-            # Skip '.' and '..' entries (file_identifier() returns None
-            # for these in UDF mode, bytes b'\x00'/b'\x01' in ISO/Joliet).
+            # Skip '.' and '..' entries — pycdlib yields None children
+            # for these in UDF mode, or bytes b'\x00'/b'\x01' identifiers
+            # in ISO9660/Joliet mode.
+            if child is None:
+                continue
             ident = child.file_identifier()
             if ident is None or ident in (b"\x00", b"\x01"):
                 continue
