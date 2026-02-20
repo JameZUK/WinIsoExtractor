@@ -36,18 +36,24 @@ log = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 # 32-bit DLLs (placed in x86_windows/Windows/System32/)
+# Sourced from SysWOW64 on 64-bit ISOs, System32 on 32-bit ISOs.
 DLLS_X86 = [
     "advapi32.dll",
     "bcrypt.dll",
+    "cabinet.dll",
     "cfgmgr32.dll",
     "ci.dll",
+    "clbcatq.dll",
     "combase.dll",
     "comctl32.dll",
     "comdlg32.dll",
     "crypt32.dll",
     "cryptbase.dll",
+    "dnsapi.dll",
     "gdi32.dll",
+    "gdi32full.dll",
     "hal.dll",
+    "imm32.dll",
     "iphlpapi.dll",
     "kdcom.dll",
     "kernel32.dll",
@@ -59,7 +65,9 @@ DLLS_X86 = [
     "msvcr120_clr0400.dll",
     "msvcr110.dll",
     "msvcrt.dll",
+    "mswsock.dll",
     "netapi32.dll",
+    "nsi.dll",
     "ntdll.dll",
     "ole32.dll",
     "oleaut32.dll",
@@ -71,7 +79,6 @@ DLLS_X86 = [
     "shlwapi.dll",
     "sspicli.dll",
     "ucrtbase.dll",
-    "ucrtbased.dll",
     "urlmon.dll",
     "user32.dll",
     "userenv.dll",
@@ -82,9 +89,10 @@ DLLS_X86 = [
     "winhttp.dll",
     "wininet.dll",
     "winmm.dll",
+    "wintrust.dll",
     "ws2_32.dll",
     "wsock32.dll",
-    # API Set / Downlevel DLLs
+    # API Set / Downlevel DLLs (extras are auto-collected by copy_dlls)
     "api-ms-win-core-fibers-l1-1-1.dll",
     "api-ms-win-core-localization-l1-2-1.dll",
     "api-ms-win-core-synch-l1-2-0.dll",
@@ -100,15 +108,20 @@ DLLS_X86 = [
 DLLS_X64 = [
     "advapi32.dll",
     "bcrypt.dll",
+    "cabinet.dll",
     "cfgmgr32.dll",
     "ci.dll",
+    "clbcatq.dll",
     "combase.dll",
     "comctl32.dll",
     "comdlg32.dll",
     "crypt32.dll",
     "cryptbase.dll",
+    "dnsapi.dll",
     "gdi32.dll",
+    "gdi32full.dll",
     "hal.dll",
+    "imm32.dll",
     "iphlpapi.dll",
     "kdcom.dll",
     "kernel32.dll",
@@ -120,7 +133,9 @@ DLLS_X64 = [
     "msvcr120_clr0400.dll",
     "msvcr110.dll",
     "msvcrt.dll",
+    "mswsock.dll",
     "netapi32.dll",
+    "nsi.dll",
     "ntdll.dll",
     "ntoskrnl.exe",
     "ole32.dll",
@@ -133,23 +148,21 @@ DLLS_X64 = [
     "shlwapi.dll",
     "sspicli.dll",
     "ucrtbase.dll",
-    "ucrtbased.dll",
     "urlmon.dll",
     "user32.dll",
     "userenv.dll",
     "uxtheme.dll",
     "vcruntime140.dll",
-    "vcruntime140d.dll",
     "vcruntime140_1.dll",
-    "vcruntime140_1d.dll",
     "version.dll",
     "win32u.dll",
     "winhttp.dll",
     "wininet.dll",
     "winmm.dll",
+    "wintrust.dll",
     "ws2_32.dll",
     "wsock32.dll",
-    # API Set / Downlevel DLLs
+    # API Set / Downlevel DLLs (extras are auto-collected by copy_dlls)
     "api-ms-win-core-fibers-l1-1-1.dll",
     "api-ms-win-core-localization-l1-2-1.dll",
     "api-ms-win-core-synch-l1-2-0.dll",
@@ -219,6 +232,14 @@ def find_case_insensitive(base_dir, rel_path):
 # ---------------------------------------------------------------------------
 
 
+def _strip_iso_version(name):
+    """Remove the ISO 9660 / Joliet version suffix (e.g. ';1') from a filename."""
+    idx = name.rfind(";")
+    if idx != -1:
+        return name[:idx]
+    return name
+
+
 def extract_wim_from_iso(iso_path, dest_dir):
     """Open *iso_path* with pycdlib and extract the install.wim (or
     install.esd) to *dest_dir*.  Returns the path to the extracted file."""
@@ -226,54 +247,66 @@ def extract_wim_from_iso(iso_path, dest_dir):
     iso = pycdlib.PyCdlib()
     iso.open(iso_path)
 
-    # Prefer UDF, then Joliet, then plain ISO9660 for long file names.
-    if iso.has_udf():
-        facade = iso.list_children(udf_path="/sources")
-        source_prefix = "/sources/"
-        use = "udf"
-    elif iso.has_joliet():
-        # Joliet paths start with /
-        facade = iso.list_children(joliet_path="/sources")
-        source_prefix = "/sources/"
-        use = "joliet"
-    else:
-        facade = iso.list_children(iso_path="/SOURCES")
-        source_prefix = "/SOURCES/"
-        use = "iso"
-
-    wim_name = None
-    for child in facade:
-        if use == "udf":
-            name = child.file_identifier().decode("utf-8", errors="replace")
-        elif use == "joliet":
-            name = child.file_identifier().decode("utf-16-be", errors="replace").rstrip(";1").rstrip("\x00")
+    try:
+        # Prefer UDF, then Joliet, then plain ISO9660 for long file names.
+        if iso.has_udf():
+            facade = iso.list_children(udf_path="/sources")
+            source_prefix = "/sources/"
+            use = "udf"
+        elif iso.has_joliet():
+            facade = iso.list_children(joliet_path="/sources")
+            source_prefix = "/sources/"
+            use = "joliet"
         else:
-            name = child.file_identifier().decode("ascii", errors="replace")
+            facade = iso.list_children(iso_path="/SOURCES")
+            source_prefix = "/SOURCES/"
+            use = "iso"
 
-        name_lower = name.lower()
-        if name_lower in ("install.wim", "install.esd"):
-            wim_name = name
-            break
+        wim_name = None
+        for child in facade:
+            # Skip '.' and '..' entries (file_identifier() returns None
+            # for these in UDF mode, bytes b'\x00'/b'\x01' in ISO/Joliet).
+            ident = child.file_identifier()
+            if ident is None or ident in (b"\x00", b"\x01"):
+                continue
 
-    if wim_name is None:
+            if use == "udf":
+                name = ident.decode("utf-8", errors="replace")
+            elif use == "joliet":
+                raw = ident.decode("utf-16-be", errors="replace")
+                name = _strip_iso_version(raw).rstrip("\x00")
+            else:
+                raw = ident.decode("ascii", errors="replace")
+                name = _strip_iso_version(raw)
+
+            name_lower = name.lower()
+            if name_lower in ("install.wim", "install.esd"):
+                wim_name = name
+                break
+
+        if wim_name is None:
+            log.error(
+                "Could not find install.wim or install.esd inside the ISO. "
+                "Is this a valid Windows installation ISO?"
+            )
+            sys.exit(1)
+
+        dest_path = os.path.join(dest_dir, wim_name)
+        log.info("Extracting %s from ISO (this may take a while) ...", wim_name)
+
+        if use == "udf":
+            iso.udf_get_file_from_iso(dest_path, udf_path=source_prefix + wim_name)
+        elif use == "joliet":
+            iso.get_file_from_iso(dest_path, joliet_path=source_prefix + wim_name)
+        else:
+            # ISO 9660 paths need the version suffix for pycdlib lookups
+            iso_name = wim_name.upper()
+            if ";" not in iso_name:
+                iso_name += ";1"
+            iso.get_file_from_iso(dest_path, iso_path=source_prefix + iso_name)
+    finally:
         iso.close()
-        log.error(
-            "Could not find install.wim or install.esd inside the ISO. "
-            "Is this a valid Windows installation ISO?"
-        )
-        sys.exit(1)
 
-    dest_path = os.path.join(dest_dir, wim_name)
-    log.info("Extracting %s from ISO (this may take a while) ...", wim_name)
-
-    if use == "udf":
-        iso.udf_get_file_from_iso(dest_path, udf_path=source_prefix + wim_name)
-    elif use == "joliet":
-        iso.get_file_from_iso(dest_path, joliet_path=source_prefix + wim_name)
-    else:
-        iso.get_file_from_iso(dest_path, iso_path=source_prefix + wim_name.upper())
-
-    iso.close()
     log.info("Extracted %s (%d MB)", wim_name, os.path.getsize(dest_path) // (1024 * 1024))
     return dest_path
 
@@ -321,14 +354,20 @@ def list_wim_images(wim_path):
 
 def extract_wim_image(wim_path, index, dest_dir):
     """Extract a single image from the WIM file to *dest_dir*."""
-    log.info("Extracting WIM image index %d to %s ...", index, dest_dir)
-    result = subprocess.run(
-        ["wimlib-imagex", "apply", wim_path, str(index), dest_dir],
-        capture_output=True,
-        text=True,
+    log.info(
+        "Extracting WIM image index %d to %s (this may take several minutes) ...",
+        index,
+        dest_dir,
     )
-    if result.returncode != 0:
-        log.error("wimlib-imagex apply failed:\n%s", result.stderr)
+    # Stream stderr so the user can see wimlib's progress output
+    proc = subprocess.Popen(
+        ["wimlib-imagex", "apply", wim_path, str(index), dest_dir],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    _, stderr = proc.communicate()
+    if proc.returncode != 0:
+        log.error("wimlib-imagex apply failed:\n%s", stderr.decode(errors="replace"))
         sys.exit(1)
     log.info("WIM image extracted successfully.")
 
@@ -352,13 +391,21 @@ def detect_architecture(wim_root):
             with open(ntdll, "rb") as f:
                 # Read DOS header to find PE offset
                 f.seek(0x3C)
-                pe_offset = int.from_bytes(f.read(4), "little")
-                f.seek(pe_offset + 4)  # skip PE signature
-                machine = int.from_bytes(f.read(2), "little")
-                if machine == 0x8664:
-                    return "x64"
-                elif machine == 0x014C:
-                    return "x86"
+                buf = f.read(4)
+                if len(buf) < 4:
+                    log.debug("ntdll.dll too small to read PE offset")
+                else:
+                    pe_offset = int.from_bytes(buf, "little")
+                    f.seek(pe_offset + 4)  # skip PE signature
+                    buf = f.read(2)
+                    if len(buf) < 2:
+                        log.debug("ntdll.dll truncated at COFF machine field")
+                    else:
+                        machine = int.from_bytes(buf, "little")
+                        if machine == 0x8664:
+                            return "x64"
+                        elif machine == 0x014C:
+                            return "x86"
         except OSError:
             pass
 
@@ -381,11 +428,14 @@ def copy_file_ci(wim_root, rel_src, dest_path):
     return False
 
 
-def copy_dlls(wim_root, src_dir_rel, dll_list, dest_sys32, *, all_dlls=False):
+def copy_dlls(wim_root, src_dir_rel, dll_list, dest_sys32, *, all_dlls=False,
+              dry_run=False):
     """Copy the required DLLs.  When *all_dlls* is True, copy every DLL and
     EXE from the source directory for maximum emulation compatibility.
-    Otherwise copy only the known-required list plus any api-ms-win-* stubs."""
-    os.makedirs(dest_sys32, exist_ok=True)
+    Otherwise copy only the known-required list plus any api-ms-win-* stubs.
+    When *dry_run* is True, count files without copying."""
+    if not dry_run:
+        os.makedirs(dest_sys32, exist_ok=True)
 
     copied = 0
     missing = []
@@ -404,38 +454,55 @@ def copy_dlls(wim_root, src_dir_rel, dll_list, dest_sys32, *, all_dlls=False):
 
     if all_dlls:
         # Copy every DLL, EXE, and related PE file from the directory
+        dll_count = 0
+        exe_count = 0
         for name_lower, real_name in available.items():
-            if name_lower.endswith((".dll", ".exe", ".drv", ".ocx", ".cpl")):
+            if name_lower.endswith((".dll", ".drv", ".ocx", ".cpl")):
                 src = os.path.join(src_dir, real_name)
                 if os.path.isfile(src):
-                    shutil.copy2(src, os.path.join(dest_sys32, real_name))
-                    copied += 1
+                    if not dry_run:
+                        shutil.copy2(src, os.path.join(dest_sys32, real_name))
+                    dll_count += 1
+            elif name_lower.endswith(".exe"):
+                src = os.path.join(src_dir, real_name)
+                if os.path.isfile(src):
+                    if not dry_run:
+                        shutil.copy2(src, os.path.join(dest_sys32, real_name))
+                    exe_count += 1
+        copied = dll_count + exe_count
+        log.info("    --all-dlls: %d DLLs + %d EXEs%s",
+                 dll_count, exe_count, " (dry run)" if dry_run else " copied")
         return copied, []
 
     for dll in dll_list:
         real_name = available.get(dll.lower())
         if real_name:
             src = os.path.join(src_dir, real_name)
-            dst = os.path.join(dest_sys32, dll)
-            shutil.copy2(src, dst)
+            if not dry_run:
+                dst = os.path.join(dest_sys32, dll)
+                shutil.copy2(src, dst)
             copied += 1
         else:
             missing.append(dll)
 
     # Additionally copy any api-ms-win-* DLLs not in the explicit list
+    already = {d.lower() for d in dll_list}
     for name_lower, real_name in available.items():
         if name_lower.startswith("api-ms-win-") and name_lower.endswith(".dll"):
-            dst = os.path.join(dest_sys32, real_name)
-            if not os.path.exists(dst):
-                shutil.copy2(os.path.join(src_dir, real_name), dst)
+            if name_lower not in already:
+                if not dry_run:
+                    dst = os.path.join(dest_sys32, real_name)
+                    if not os.path.exists(dst):
+                        shutil.copy2(os.path.join(src_dir, real_name), dst)
                 copied += 1
 
     return copied, missing
 
 
-def copy_drivers(wim_root, src_dir_rel, dest_drivers):
+def copy_drivers(wim_root, src_dir_rel, dest_drivers, *, dry_run=False):
     """Copy common driver files (.sys) needed for kernel-mode emulation."""
-    os.makedirs(dest_drivers, exist_ok=True)
+    if not dry_run:
+        os.makedirs(dest_drivers, exist_ok=True)
     src_dir = find_case_insensitive(wim_root, src_dir_rel)
     if src_dir is None or not os.path.isdir(src_dir):
         return 0
@@ -443,27 +510,35 @@ def copy_drivers(wim_root, src_dir_rel, dest_drivers):
     try:
         for entry in os.listdir(src_dir):
             if entry.lower().endswith(".sys"):
-                shutil.copy2(os.path.join(src_dir, entry), os.path.join(dest_drivers, entry))
+                if not dry_run:
+                    shutil.copy2(os.path.join(src_dir, entry), os.path.join(dest_drivers, entry))
                 copied += 1
     except OSError:
         pass
     return copied
 
 
-def copy_registry_hives(wim_root, dest_registry):
+def copy_registry_hives(wim_root, dest_registry, *, dry_run=False):
     """Copy registry hive files into the Qiling registry directory."""
-    os.makedirs(dest_registry, exist_ok=True)
+    if not dry_run:
+        os.makedirs(dest_registry, exist_ok=True)
     copied = 0
 
     for src_rel, dest_name in REGISTRY_HIVES.items():
-        if copy_file_ci(wim_root, src_rel, os.path.join(dest_registry, dest_name)):
+        src = find_case_insensitive(wim_root, src_rel)
+        if src and os.path.isfile(src):
+            if not dry_run:
+                copy_file_ci(wim_root, src_rel, os.path.join(dest_registry, dest_name))
             log.info("  Registry hive: %s -> %s", src_rel, dest_name)
             copied += 1
         else:
             log.warning("  Registry hive NOT found: %s", src_rel)
 
     # NTUSER.DAT
-    if copy_file_ci(wim_root, NTUSER_SOURCE, os.path.join(dest_registry, NTUSER_DEST)):
+    ntuser_src = find_case_insensitive(wim_root, NTUSER_SOURCE)
+    if ntuser_src and os.path.isfile(ntuser_src):
+        if not dry_run:
+            copy_file_ci(wim_root, NTUSER_SOURCE, os.path.join(dest_registry, NTUSER_DEST))
         log.info("  Registry hive: %s -> %s", NTUSER_SOURCE, NTUSER_DEST)
         copied += 1
     else:
@@ -472,14 +547,17 @@ def copy_registry_hives(wim_root, dest_registry):
     return copied
 
 
-def build_rootfs(wim_root, output_dir, arch, *, all_dlls=False, no_registry=False):
+def build_rootfs(wim_root, output_dir, arch, *, all_dlls=False,
+                 no_registry=False, dry_run=False):
     """Construct the Qiling rootfs directory tree from an extracted Windows
     image at *wim_root*.
 
     When *all_dlls* is True every DLL/EXE in System32 / SysWOW64 is copied
     for maximum emulation coverage.  When *no_registry* is True, registry
-    hives are skipped (PeMCP auto-generates its own stubs).
+    hives are skipped (PeMCP auto-generates its own stubs).  When *dry_run*
+    is True, report what would be extracted without writing anything.
     """
+    verb = "found" if dry_run else "copied"
 
     if arch == "x64":
         rootfs_x64 = os.path.join(output_dir, "x8664_windows")
@@ -490,47 +568,53 @@ def build_rootfs(wim_root, output_dir, arch, *, all_dlls=False, no_registry=Fals
         sys32_x64 = os.path.join(rootfs_x64, "Windows", "System32")
         drivers_x64 = os.path.join(sys32_x64, "drivers")
         reg_x64 = os.path.join(rootfs_x64, "Windows", "registry")
-        os.makedirs(os.path.join(rootfs_x64, "Windows", "Temp"), exist_ok=True)
-        os.makedirs(os.path.join(rootfs_x64, "bin"), exist_ok=True)
+        if not dry_run:
+            os.makedirs(os.path.join(rootfs_x64, "Windows", "Temp"), exist_ok=True)
+            os.makedirs(os.path.join(rootfs_x64, "bin"), exist_ok=True)
 
         copied, missing = copy_dlls(
-            wim_root, "Windows/System32", DLLS_X64, sys32_x64, all_dlls=all_dlls,
+            wim_root, "Windows/System32", DLLS_X64, sys32_x64,
+            all_dlls=all_dlls, dry_run=dry_run,
         )
-        log.info("  64-bit DLLs copied: %d, missing: %d", copied, len(missing))
+        log.info("  64-bit DLLs %s: %d, missing: %d", verb, copied, len(missing))
         if missing:
             log.warning("  Missing 64-bit DLLs: %s", ", ".join(missing))
 
-        drv = copy_drivers(wim_root, "Windows/System32/drivers", drivers_x64)
-        log.info("  64-bit drivers copied: %d", drv)
+        drv = copy_drivers(wim_root, "Windows/System32/drivers", drivers_x64,
+                           dry_run=dry_run)
+        log.info("  64-bit drivers %s: %d", verb, drv)
 
         if not no_registry:
             log.info("  Copying registry hives for x8664 ...")
-            copy_registry_hives(wim_root, reg_x64)
+            copy_registry_hives(wim_root, reg_x64, dry_run=dry_run)
 
         # --- x86 rootfs (from SysWOW64) ---
         log.info("Building x86_windows rootfs (from SysWOW64) ...")
         sys32_x86 = os.path.join(rootfs_x86, "Windows", "System32")
         drivers_x86 = os.path.join(sys32_x86, "drivers")
         reg_x86 = os.path.join(rootfs_x86, "Windows", "registry")
-        os.makedirs(os.path.join(rootfs_x86, "Windows", "Temp"), exist_ok=True)
-        os.makedirs(os.path.join(rootfs_x86, "bin"), exist_ok=True)
+        if not dry_run:
+            os.makedirs(os.path.join(rootfs_x86, "Windows", "Temp"), exist_ok=True)
+            os.makedirs(os.path.join(rootfs_x86, "bin"), exist_ok=True)
 
         copied, missing = copy_dlls(
-            wim_root, "Windows/SysWOW64", DLLS_X86, sys32_x86, all_dlls=all_dlls,
+            wim_root, "Windows/SysWOW64", DLLS_X86, sys32_x86,
+            all_dlls=all_dlls, dry_run=dry_run,
         )
-        log.info("  32-bit DLLs copied: %d, missing: %d", copied, len(missing))
+        log.info("  32-bit DLLs %s: %d, missing: %d", verb, copied, len(missing))
         if missing:
             log.warning("  Missing 32-bit DLLs: %s", ", ".join(missing))
 
-        drv = copy_drivers(wim_root, "Windows/SysWOW64/drivers", drivers_x86)
+        drv = copy_drivers(wim_root, "Windows/SysWOW64/drivers", drivers_x86,
+                           dry_run=dry_run)
         if drv == 0:
-            # Some ISOs don't have a SysWOW64/drivers; try System32/drivers
-            drv = copy_drivers(wim_root, "Windows/System32/drivers", drivers_x86)
-        log.info("  32-bit drivers copied: %d", drv)
+            drv = copy_drivers(wim_root, "Windows/System32/drivers", drivers_x86,
+                               dry_run=dry_run)
+        log.info("  32-bit drivers %s: %d", verb, drv)
 
         if not no_registry:
             log.info("  Copying registry hives for x86 ...")
-            copy_registry_hives(wim_root, reg_x86)
+            copy_registry_hives(wim_root, reg_x86, dry_run=dry_run)
 
     else:
         # 32-bit only ISO
@@ -540,22 +624,25 @@ def build_rootfs(wim_root, output_dir, arch, *, all_dlls=False, no_registry=Fals
         sys32 = os.path.join(rootfs_x86, "Windows", "System32")
         drivers = os.path.join(sys32, "drivers")
         reg = os.path.join(rootfs_x86, "Windows", "registry")
-        os.makedirs(os.path.join(rootfs_x86, "Windows", "Temp"), exist_ok=True)
-        os.makedirs(os.path.join(rootfs_x86, "bin"), exist_ok=True)
+        if not dry_run:
+            os.makedirs(os.path.join(rootfs_x86, "Windows", "Temp"), exist_ok=True)
+            os.makedirs(os.path.join(rootfs_x86, "bin"), exist_ok=True)
 
         copied, missing = copy_dlls(
-            wim_root, "Windows/System32", DLLS_X86, sys32, all_dlls=all_dlls,
+            wim_root, "Windows/System32", DLLS_X86, sys32,
+            all_dlls=all_dlls, dry_run=dry_run,
         )
-        log.info("  32-bit DLLs copied: %d, missing: %d", copied, len(missing))
+        log.info("  32-bit DLLs %s: %d, missing: %d", verb, copied, len(missing))
         if missing:
             log.warning("  Missing 32-bit DLLs: %s", ", ".join(missing))
 
-        drv = copy_drivers(wim_root, "Windows/System32/drivers", drivers)
-        log.info("  32-bit drivers copied: %d", drv)
+        drv = copy_drivers(wim_root, "Windows/System32/drivers", drivers,
+                           dry_run=dry_run)
+        log.info("  32-bit drivers %s: %d", verb, drv)
 
         if not no_registry:
             log.info("  Copying registry hives ...")
-            copy_registry_hives(wim_root, reg)
+            copy_registry_hives(wim_root, reg, dry_run=dry_run)
 
 
 # ---------------------------------------------------------------------------
@@ -610,6 +697,12 @@ def main():
         action="store_true",
         help="Skip extracting registry hives. PeMCP auto-generates its own "
         "registry stubs, so this is safe when using PeMCP.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Extract the WIM and report what would be copied, without "
+        "writing anything to the output directory.",
     )
     parser.add_argument(
         "--keep-wim",
@@ -696,7 +789,8 @@ def main():
         log.info("Detected architecture: %s", arch)
 
         output_dir = os.path.abspath(args.output)
-        os.makedirs(output_dir, exist_ok=True)
+        if not args.dry_run:
+            os.makedirs(output_dir, exist_ok=True)
 
         build_rootfs(
             wim_extract_dir,
@@ -704,23 +798,29 @@ def main():
             arch,
             all_dlls=args.all_dlls,
             no_registry=args.no_registry,
+            dry_run=args.dry_run,
         )
 
         log.info("=" * 60)
-        log.info("Qiling rootfs created at: %s", output_dir)
+        if args.dry_run:
+            log.info("DRY RUN complete -- no files were written")
+            log.info("Output would be: %s", output_dir)
+        else:
+            log.info("Qiling rootfs created at: %s", output_dir)
         if args.all_dlls:
             log.info("Mode: ALL DLLs copied for maximum compatibility")
         log.info("=" * 60)
 
         # Print summary of what was created
-        for dirpath, dirnames, filenames in os.walk(output_dir):
-            depth = dirpath.replace(output_dir, "").count(os.sep)
-            if depth <= 3:
-                indent = "  " * depth
-                rel = os.path.relpath(dirpath, output_dir)
-                file_count = len(filenames)
-                if file_count > 0:
-                    log.info("%s%s/ (%d files)", indent, rel, file_count)
+        if not args.dry_run:
+            for dirpath, dirnames, filenames in os.walk(output_dir):
+                depth = dirpath.replace(output_dir, "").count(os.sep)
+                if depth <= 3:
+                    indent = "  " * depth
+                    rel = os.path.relpath(dirpath, output_dir)
+                    file_count = len(filenames)
+                    if file_count > 0:
+                        log.info("%s%s/ (%d files)", indent, rel, file_count)
 
     finally:
         # Clean up temp directory

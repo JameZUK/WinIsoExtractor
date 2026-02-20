@@ -29,7 +29,8 @@ PeMCP expects the rootfs at `./qiling-rootfs/` (or the path set via
 # 1. Build the extractor image
 docker build -t win-iso-extractor .
 
-# 2. Extract DLLs into a qiling-rootfs directory
+# 2. Create the output directory and extract DLLs
+mkdir -p qiling-rootfs
 docker run --rm \
   -v /path/to/Win10.iso:/data/input.iso:ro \
   -v $(pwd)/qiling-rootfs:/data/rootfs \
@@ -45,6 +46,7 @@ System32, uses more disk space but avoids missing-DLL errors during
 emulation):
 
 ```bash
+mkdir -p qiling-rootfs
 docker run --rm \
   -v /path/to/Win10.iso:/data/input.iso:ro \
   -v $(pwd)/qiling-rootfs:/data/rootfs \
@@ -86,9 +88,11 @@ docker run --rm \
   win-iso-extractor /data/input.iso --list
 ```
 
-Extract to a local `qiling-rootfs/` directory:
+Extract to a local `qiling-rootfs/` directory (create it first — the
+container runtime requires the bind-mount target to exist on the host):
 
 ```bash
+mkdir -p qiling-rootfs
 docker run --rm \
   -v /path/to/Win10.iso:/data/input.iso:ro \
   -v $(pwd)/qiling-rootfs:/data/rootfs \
@@ -135,6 +139,7 @@ options:
   -l, --list            List available images in the ISO and exit
   --all-dlls            Copy ALL DLLs/EXEs from System32 (maximum compatibility)
   --no-registry         Skip registry hive extraction (PeMCP generates its own)
+  --dry-run             Report what would be extracted without writing anything
   --keep-wim            Keep the intermediate WIM file after extraction
   -v, --verbose         Enable debug logging
 ```
@@ -153,6 +158,9 @@ python extract_iso.py Win10.iso --output ./my_rootfs --index 1
 
 # Maximum compatibility: all DLLs, skip registry (PeMCP generates stubs)
 python extract_iso.py Win10.iso --all-dlls --no-registry
+
+# Preview what would be extracted without copying anything
+python extract_iso.py Win10.iso --dry-run --index 1
 ```
 
 ## Output structure

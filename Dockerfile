@@ -1,3 +1,4 @@
+# Requires Python 3.9+ (for str.removesuffix and modern typing).
 FROM python:3.12-slim
 
 RUN apt-get update && \
