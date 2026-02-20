@@ -505,11 +505,55 @@ def copy_file_ci(wim_root, rel_src, dest_path):
     return False
 
 
+def _build_winsxs_index(wim_root, arch):
+    """Build a case-insensitive {filename_lower: full_path} index of DLLs
+    inside Windows/WinSxS/ for the given architecture.
+
+    WinSxS contains side-by-side assemblies including Visual C++ runtime
+    DLLs and api-ms-win-* forwarders that aren't directly in System32.
+    When multiple versions of the same DLL exist, the last one found
+    (alphabetically latest assembly version) wins.
+    """
+    winsxs = find_case_insensitive(wim_root, "Windows/WinSxS")
+    if winsxs is None or not os.path.isdir(winsxs):
+        return {}
+
+    # Only scan assembly directories matching the target architecture
+    arch_prefix = "amd64_" if arch == "x64" else "x86_"
+    # Also include wow64_ dirs (32-bit assemblies on 64-bit)
+    wow_prefix = "wow64_" if arch == "x64" else None
+
+    index = {}
+    try:
+        for entry in sorted(os.listdir(winsxs)):
+            entry_lower = entry.lower()
+            if not entry_lower.startswith(arch_prefix):
+                if wow_prefix is None or not entry_lower.startswith(wow_prefix):
+                    continue
+            subdir = os.path.join(winsxs, entry)
+            if not os.path.isdir(subdir):
+                continue
+            try:
+                for fname in os.listdir(subdir):
+                    if fname.lower().endswith((".dll", ".exe")):
+                        index[fname.lower()] = os.path.join(subdir, fname)
+            except OSError:
+                continue
+    except OSError:
+        pass
+
+    log.debug("WinSxS index: %d DLLs/EXEs found for %s", len(index), arch)
+    return index
+
+
 def copy_dlls(wim_root, src_dir_rel, dll_list, dest_sys32, *, all_dlls=False,
-              dry_run=False):
+              dry_run=False, winsxs_index=None):
     """Copy the required DLLs.  When *all_dlls* is True, copy every DLL and
     EXE from the source directory for maximum emulation compatibility.
     Otherwise copy only the known-required list plus any api-ms-win-* stubs.
+
+    Missing DLLs are searched in *winsxs_index* (a dict mapping
+    filename_lower -> full_path built by ``_build_winsxs_index``).
     When *dry_run* is True, count files without copying."""
     if not dry_run:
         os.makedirs(dest_sys32, exist_ok=True)
@@ -572,6 +616,23 @@ def copy_dlls(wim_root, src_dir_rel, dll_list, dest_sys32, *, all_dlls=False,
                     if not os.path.exists(dst):
                         shutil.copy2(os.path.join(src_dir, real_name), dst)
                 copied += 1
+
+    # --- WinSxS fallback for still-missing DLLs --------------------------
+    if missing and winsxs_index:
+        still_missing = []
+        winsxs_found = 0
+        for dll in missing:
+            sxs_path = winsxs_index.get(dll.lower())
+            if sxs_path and os.path.isfile(sxs_path):
+                if not dry_run:
+                    shutil.copy2(sxs_path, os.path.join(dest_sys32, dll))
+                winsxs_found += 1
+                copied += 1
+            else:
+                still_missing.append(dll)
+        if winsxs_found:
+            log.info("    WinSxS fallback: %d DLLs recovered", winsxs_found)
+        missing = still_missing
 
     return copied, missing
 
@@ -636,6 +697,12 @@ def build_rootfs(wim_root, output_dir, arch, *, all_dlls=False,
     """
     verb = "found" if dry_run else "copied"
 
+    # Build WinSxS indexes to recover DLLs not directly in System32/SysWOW64
+    # (e.g. Visual C++ runtime DLLs, api-ms-win-crt-* forwarders).
+    log.info("Indexing WinSxS assemblies ...")
+    sxs_x64 = _build_winsxs_index(wim_root, "x64") if arch == "x64" else {}
+    sxs_x86 = _build_winsxs_index(wim_root, "x86")
+
     if arch == "x64":
         rootfs_x64 = os.path.join(output_dir, "x8664_windows")
         rootfs_x86 = os.path.join(output_dir, "x86_windows")
@@ -651,7 +718,7 @@ def build_rootfs(wim_root, output_dir, arch, *, all_dlls=False,
 
         copied, missing = copy_dlls(
             wim_root, "Windows/System32", DLLS_X64, sys32_x64,
-            all_dlls=all_dlls, dry_run=dry_run,
+            all_dlls=all_dlls, dry_run=dry_run, winsxs_index=sxs_x64,
         )
         log.info("  64-bit DLLs %s: %d, missing: %d", verb, copied, len(missing))
         if missing:
@@ -676,7 +743,7 @@ def build_rootfs(wim_root, output_dir, arch, *, all_dlls=False,
 
         copied, missing = copy_dlls(
             wim_root, "Windows/SysWOW64", DLLS_X86, sys32_x86,
-            all_dlls=all_dlls, dry_run=dry_run,
+            all_dlls=all_dlls, dry_run=dry_run, winsxs_index=sxs_x86,
         )
         log.info("  32-bit DLLs %s: %d, missing: %d", verb, copied, len(missing))
         if missing:
@@ -707,7 +774,7 @@ def build_rootfs(wim_root, output_dir, arch, *, all_dlls=False,
 
         copied, missing = copy_dlls(
             wim_root, "Windows/System32", DLLS_X86, sys32,
-            all_dlls=all_dlls, dry_run=dry_run,
+            all_dlls=all_dlls, dry_run=dry_run, winsxs_index=sxs_x86,
         )
         log.info("  32-bit DLLs %s: %d, missing: %d", verb, copied, len(missing))
         if missing:
