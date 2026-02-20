@@ -240,22 +240,114 @@ def _strip_iso_version(name):
     return name
 
 
-def _udf_find_child(iso, parent_path, target_lower):
-    """Case-insensitive search for a UDF directory entry.
+def _child_name(child, mode):
+    """Extract a usable filename from a pycdlib directory child entry.
 
-    Returns the real (on-disc) name of the child whose lower-cased name
-    equals *target_lower*, or ``None`` if not found.
+    Returns the decoded filename string, or ``None`` if the entry should
+    be skipped (e.g. dot/dotdot sentinels, None children).
     """
-    for child in iso.list_children(udf_path=parent_path):
-        if child is None:
-            continue
-        ident = child.file_identifier()
-        if ident is None:
-            continue
-        name = ident.decode("utf-8", errors="replace")
-        if name.lower() == target_lower:
-            return name
-    return None
+    if child is None:
+        return None
+
+    # UDF entries: try the .fi attribute first (UDFFileIdentifierDescriptor),
+    # then fall back to file_identifier() for compat with different pycdlib
+    # versions.
+    if mode == "udf":
+        raw = getattr(child, "fi", None)
+        if raw is None and hasattr(child, "file_identifier"):
+            raw = child.file_identifier()
+        if raw is None or raw in (b"", b"\x00"):
+            return None
+        return raw.decode("utf-8", errors="replace")
+
+    # ISO9660 / Joliet
+    if not hasattr(child, "file_identifier"):
+        return None
+    raw = child.file_identifier()
+    if raw is None or raw in (b"\x00", b"\x01"):
+        return None
+
+    if mode == "joliet":
+        return _strip_iso_version(
+            raw.decode("utf-16-be", errors="replace")
+        ).rstrip("\x00")
+
+    # plain ISO9660
+    return _strip_iso_version(raw.decode("ascii", errors="replace"))
+
+
+def _find_wim_in_iso(iso):
+    """Try UDF, Joliet, then ISO9660 to locate install.wim / install.esd.
+
+    Returns ``(mode, source_prefix, wim_name)`` on success, or
+    ``(None, None, None)`` if not found.
+    """
+    strategies = []
+
+    if iso.has_udf():
+        strategies.append("udf")
+    if iso.has_joliet():
+        strategies.append("joliet")
+    # ISO9660 is always present
+    strategies.append("iso")
+
+    for mode in strategies:
+        log.debug("Trying %s filesystem ...", mode.upper())
+
+        # --- Locate the sources directory --------------------------------
+        if mode == "udf":
+            # UDF paths are case-sensitive; scan root to find real name
+            sources_name = None
+            try:
+                for child in iso.list_children(udf_path="/"):
+                    name = _child_name(child, "udf")
+                    if name and name.lower() == "sources":
+                        sources_name = name
+                        break
+            except Exception as exc:
+                log.debug("UDF root listing failed: %s", exc)
+                continue
+
+            if sources_name is None:
+                log.debug("UDF: 'sources' directory not found in root")
+                continue
+
+            source_prefix = "/" + sources_name + "/"
+            try:
+                children = list(iso.list_children(udf_path="/" + sources_name))
+            except Exception as exc:
+                log.debug("UDF: failed to list /%s: %s", sources_name, exc)
+                continue
+
+        elif mode == "joliet":
+            source_prefix = "/sources/"
+            try:
+                children = list(iso.list_children(joliet_path="/sources"))
+            except Exception as exc:
+                log.debug("Joliet: failed to list /sources: %s", exc)
+                continue
+
+        else:
+            source_prefix = "/SOURCES/"
+            try:
+                children = list(iso.list_children(iso_path="/SOURCES"))
+            except Exception as exc:
+                log.debug("ISO9660: failed to list /SOURCES: %s", exc)
+                continue
+
+        # --- Scan for install.wim / install.esd --------------------------
+        for child in children:
+            name = _child_name(child, mode)
+            if name is None:
+                continue
+            log.debug("  %s: found entry: %s", mode.upper(), name)
+            if name.lower() in ("install.wim", "install.esd"):
+                log.info("Found %s via %s filesystem", name, mode.upper())
+                return mode, source_prefix, name
+
+        log.debug("%s: install.wim/esd not found, trying next filesystem", mode.upper())
+
+    return None, None, None
 
 
 def extract_wim_from_iso(iso_path, dest_dir):
@@ -266,55 +358,13 @@ def extract_wim_from_iso(iso_path, dest_dir):
     iso.open(iso_path)
 
     try:
-        # Prefer UDF, then Joliet, then plain ISO9660 for long file names.
-        if iso.has_udf():
-            use = "udf"
-            # UDF paths are case-sensitive in pycdlib — find "sources"
-            # directory with a case-insensitive scan of the root.
-            sources_name = _udf_find_child(iso, "/", "sources")
-            if sources_name is None:
-                log.error("Could not find 'sources' directory in ISO (UDF).")
-                sys.exit(1)
-            source_prefix = "/" + sources_name + "/"
-            facade = iso.list_children(udf_path="/" + sources_name)
-        elif iso.has_joliet():
-            facade = iso.list_children(joliet_path="/sources")
-            source_prefix = "/sources/"
-            use = "joliet"
-        else:
-            facade = iso.list_children(iso_path="/SOURCES")
-            source_prefix = "/SOURCES/"
-            use = "iso"
-
-        wim_name = None
-        for child in facade:
-            # Skip '.' and '..' entries — pycdlib yields None children
-            # for these in UDF mode, or bytes b'\x00'/b'\x01' identifiers
-            # in ISO9660/Joliet mode.
-            if child is None:
-                continue
-            ident = child.file_identifier()
-            if ident is None or ident in (b"\x00", b"\x01"):
-                continue
-
-            if use == "udf":
-                name = ident.decode("utf-8", errors="replace")
-            elif use == "joliet":
-                raw = ident.decode("utf-16-be", errors="replace")
-                name = _strip_iso_version(raw).rstrip("\x00")
-            else:
-                raw = ident.decode("ascii", errors="replace")
-                name = _strip_iso_version(raw)
-
-            name_lower = name.lower()
-            if name_lower in ("install.wim", "install.esd"):
-                wim_name = name
-                break
+        use, source_prefix, wim_name = _find_wim_in_iso(iso)
 
         if wim_name is None:
             log.error(
                 "Could not find install.wim or install.esd inside the ISO. "
-                "Is this a valid Windows installation ISO?"
+                "Is this a valid Windows installation ISO? "
+                "Re-run with -v for details."
             )
             sys.exit(1)
 
