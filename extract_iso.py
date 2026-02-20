@@ -372,7 +372,7 @@ def extract_wim_from_iso(iso_path, dest_dir):
         log.info("Extracting %s from ISO (this may take a while) ...", wim_name)
 
         if use == "udf":
-            iso.udf_get_file_from_iso(dest_path, udf_path=source_prefix + wim_name)
+            iso.get_file_from_iso(dest_path, udf_path=source_prefix + wim_name)
         elif use == "joliet":
             iso.get_file_from_iso(dest_path, joliet_path=source_prefix + wim_name)
         else:
