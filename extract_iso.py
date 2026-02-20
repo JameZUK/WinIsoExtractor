@@ -304,6 +304,17 @@ def _find_wim_in_iso(iso):
                     if name and name.lower() == "sources":
                         sources_name = name
                         break
+                    # Dump raw child info for debugging
+                    if child is not None:
+                        log.debug(
+                            "  UDF root child: type=%s, name=%r, "
+                            "has_fi=%s, has_file_identifier=%s, fi=%r",
+                            type(child).__name__,
+                            name,
+                            hasattr(child, "fi"),
+                            hasattr(child, "file_identifier"),
+                            getattr(child, "fi", "<missing>"),
+                        )
             except Exception as exc:
                 log.debug("UDF root listing failed: %s", exc)
                 continue
