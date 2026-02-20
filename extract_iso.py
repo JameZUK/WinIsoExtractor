@@ -79,7 +79,6 @@ DLLS_X86 = [
     "user32.dll",
     "userenv.dll",
     "uxtheme.dll",
-    "vcruntime140.dll",
     "version.dll",
     "win32u.dll",
     "winhttp.dll",
