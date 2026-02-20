@@ -99,6 +99,10 @@ docker run --rm \
   win-iso-extractor /data/input.iso --output /data/rootfs --index 1
 ```
 
+> **Podman / SELinux users:** If you get `PermissionError` when writing to
+> the output directory, add `:Z` to the output volume mount:
+> `-v $(pwd)/qiling-rootfs:/data/rootfs:Z`
+
 ## Running natively
 
 ### Prerequisites
