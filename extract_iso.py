@@ -264,13 +264,19 @@ def extract_wim_from_iso(iso_path, dest_dir):
 
         wim_name = None
         for child in facade:
+            # Skip '.' and '..' entries (file_identifier() returns None
+            # for these in UDF mode, bytes b'\x00'/b'\x01' in ISO/Joliet).
+            ident = child.file_identifier()
+            if ident is None or ident in (b"\x00", b"\x01"):
+                continue
+
             if use == "udf":
-                name = child.file_identifier().decode("utf-8", errors="replace")
+                name = ident.decode("utf-8", errors="replace")
             elif use == "joliet":
-                raw = child.file_identifier().decode("utf-16-be", errors="replace")
+                raw = ident.decode("utf-16-be", errors="replace")
                 name = _strip_iso_version(raw).rstrip("\x00")
             else:
-                raw = child.file_identifier().decode("ascii", errors="replace")
+                raw = ident.decode("ascii", errors="replace")
                 name = _strip_iso_version(raw)
 
             name_lower = name.lower()
